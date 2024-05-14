@@ -1,0 +1,10 @@
+{
+    "target_overrides": {
+        "*": {
+            "target.c_lib": "std",
+            "target.printf_lib": "std",
+            "storage.storage_type":"TDB_INTERNAL",
+            "platform.callback-nontrivial": true
+        }
+    }
+}
