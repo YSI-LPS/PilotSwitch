@@ -5,8 +5,6 @@
 
 #define MBED_PROJECT    "PilotSwitch"
 
-BusOut              Led(LED1, LED2, LED3);
-UnbufferedSerial    pc(USBTX, USBRX, 230400);
 EthernetInterface   eth;
 Thread              *queueThread = NULL;
 EventQueue          queue;
@@ -16,6 +14,11 @@ enum enumMODE       {   THRESHOLD, HYSTERESIS, RANGE };
 enum enumPARAM      {   MAC, NAME, NETWORK, SPEC };
 enum enumSETTING    {   LOWER, UPPER, PERIOD, MODE, NOTIFY, NB_SETTINGS };
 enum enumSENSOR     {   BATTERY, SECTOR, PRESSURE, THERMISTANCE, THERMOCOUPLE, SHT25_TEMP_I2C0, SHT25_HUM_I2C0, SHT25_TEMP_I2C1, SHT25_HUM_I2C1, NB_SENSORS };
+enum enumSWITCH     {   NCLOSE, NOPEN };
+
+BusOut              Led(LED1, LED2, LED3);
+UnbufferedSerial    pc(USBTX, USBRX, 230400);
+DigitalOut          enable[] = { DigitalOut(A0, NCLOSE), DigitalOut(A1, NCLOSE) };
 
 struct  {   Transmission::enum_trans_status state;
             const Transmission::enum_trans_status client;
@@ -58,7 +61,8 @@ void                kv_apply(string, string = "");
 
 int main(void)
 {
-    while(1) ThisThread::sleep_for(200ms);
+    setup();
+    while(1) Led = connection.color[connection.state = transmission.recv()];
 }
 
 void setup(void)
@@ -68,6 +72,7 @@ void setup(void)
     Led = connection.color[connection.state];
     kv_apply("IDN");
     kv_apply("ETH");
+    kv_apply("PASSWORD");
     queueThread = new Thread;
     queueThread->start(callback(&queue, &EventQueue::dispatch_forever));
 }
@@ -102,9 +107,15 @@ void kv_apply(string kvKey, string kvParam)
     {
         processing((kvValue.substr(0, 3) == "ETH")?kvValue:"ETH=DHCP");
     }
-    else
+    else if(kvKey == "PASSWORD")
     {
-        
+        switch(kvStatus)
+        {
+            case KVAL_PVAL: case NOTKVAL_PVAL: if(kvValue != kvParam) kv(kvKey, kvValue = kvParam); break;
+            case NOTKVAL_NOTPVAL: kv(kvKey, kvValue = uc.pwd); break;
+            default: break;
+        }
+        uc.pwd = kvValue;
     }
 }
 
@@ -155,13 +166,9 @@ string html(const enumHTML& PART, const enumSENSOR& SENSORS, const bool& BACKUP)
         case OPEN_BODY:         ssend << "\r\n\t<body style=background-color:dimgray>\r\n\t\t<center>\r\n\t\t\t<h1 style=color:white>" << MBED_PROJECT << "</h1>"; break;
         case OPEN_BODY_IFRAME:  ssend << "\r\n\t<body style=background-color:transparency>\r\n\t\t<center>"; break;
         case CLOSE_BODY:        ssend << "\r\n\t\t</center>\r\n\t</body>\r\n</html>"; break;
-        case FAVICON:
+        case FAVICON: case ERR404:
             ssend << "Content-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\n\r\n<svg width=\"100%\" height=\"100%\" viewBox=\"0 0 100 100\" style=\"background-color:black\" xmlns=\"http://www.w3.org/2000/svg\">\r\n\t<title>" << MBED_PROJECT;
-            ssend << "</title>\r\n\t<text x=\"0\" y=\"90\" textLength=\"80\" font-size=\"120\" fill=\"white\" font-weight=\"bold\" font-style=\"italic\" lengthAdjust=\"spacingAndGlyphs\" style=\"font-family:\'Bauhaus 93\';-inkscape-font-specification:\'Bauhaus 93, Normal\'\">ElI</text>\r\n</svg>";
-        break;
-        case ERR404:
-            ssend << "Content-Type: image/svg+xml\r\nAccess-Control-Allow-Origin: *\r\n\r\n<svg width=\"100%\" height=\"100%\" viewBox=\"0 0 100 100\" style=\"background-color:black\" xmlns=\"http://www.w3.org/2000/svg\">\r\n\t<title>" << MBED_PROJECT;
-            ssend << "</title>\r\n\t<text x=\"0\" y=\"90\" textLength=\"80\" font-size=\"120\" fill=\"white\" font-weight=\"bold\" font-style=\"italic\" lengthAdjust=\"spacingAndGlyphs\" style=\"font-family:\'Bauhaus 93\';-inkscape-font-specification:\'Bauhaus 93, Normal\'\">404</text>\r\n</svg>";
+            ssend << "</title>\r\n\t<text x=\"0\" y=\"90\" textLength=\"80\" font-size=\"120\" fill=\"white\" font-weight=\"bold\" font-style=\"italic\" lengthAdjust=\"spacingAndGlyphs\" style=\"font-family:\'Bauhaus 93\';-inkscape-font-specification:\'Bauhaus 93, Normal\'\">" << (PART==FAVICON?"ElI":"404") << "</text>\r\n</svg>";
         break;
         case SMTP:
         break;
@@ -171,6 +178,8 @@ string html(const enumHTML& PART, const enumSENSOR& SENSORS, const bool& BACKUP)
 
 string processing(string cmd)
 {
+    static bool password = false, admin = false;
+    static string transfert;
     ostringstream ssend;
     ssend << fixed;
     ssend.precision(2);
@@ -195,7 +204,6 @@ string processing(string cmd)
     {
         queue.call(&processing, "ETH=OFF");
         queue.call(&kv_apply, "ETH", "");
-        // queue.call_in(30s, &notify, "REBOOT", "", NB_SENSORS, "");
     }
     else if(cmd == "ETH=DHCP")
     {
@@ -209,6 +217,32 @@ string processing(string cmd)
         uc.param[MAC] = transmission.ip(true, connection.ip.c_str(), connection.port, connection.mask.c_str(), connection.gateway.c_str());
         kv("ETH", "ETH=IP " + connection.ip + ":" + to_string(connection.port) + " " + connection.mask + " " + connection.gateway);
     }
+    else if(cmd == "1O")
+        enable[0] = NOPEN;
+    else if(cmd == "1C")
+        enable[0] = NCLOSE;
+    else if(cmd == "2O")
+        enable[1] = NOPEN;
+    else if(cmd == "2C")
+        enable[1] = NCLOSE;
+    else if(cmd.find("LOGIN=") != string::npos)
+    {
+        cmd = cmd.substr(cmd.find("LOGIN=") + 6);
+        password = ((cmd == uc.pwd) || (admin = (cmd == uc.adm)));
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /settings\r\n\r\n";
+    }
+    else if(cmd.find("PASSWORD=") != string::npos)
+    {
+        string  oldPwd(cmd.substr(cmd.find("PASSWORD=") + 9, cmd.find('&') - cmd.find("PASSWORD=") - 9)),
+                newPwd(cmd.substr(cmd.find("NEW=") + 4, cmd.find(" HTTP") - cmd.find("NEW=") - 4));
+        if(password && (cmd.find("REFERER: ") != string::npos) && (admin || ((oldPwd == uc.pwd) && (newPwd != oldPwd))))
+        {
+            queue.call(&kv_apply, "PASSWORD", newPwd);
+            password = false;
+            ssend << transmission.http.RETURN_SEE_OTHER << "Location: /settings\r\n\r\n";
+        }
+        else ssend << transmission.http.RETURN_NO_CONTENT << html(CONTENT);
+    }
     else if(cmd.find("HEAD /") != string::npos)
         ssend << transmission.http.RETURN_OK << html(CONTENT);
     else if(cmd.find("GET /FAVICON.ICO HTTP") != string::npos)
@@ -216,10 +250,104 @@ string processing(string cmd)
     else if(cmd.find("GET / HTTP") != string::npos)
     {
         ssend << transmission.http.RETURN_OK << html(CONTENT) << html(HEAD_META) << html(OPEN_BODY);
-        ssend << "\r\n\t\t\t<table style=border-collapse:collapse>";
-        // for(const typeSensor &s : sensor) if(s.status != "MISSING") ssend << "\r\n\t\t\t\t<tr style=background-color:" << BgColor[s.status] << "><th style=text-align:left;padding:5px>" << s.name << "</th><td style=text-align:center;padding:5px>" << (s.unity.empty()?s.status:str_precision(s.value)) << s.unity << "</td></tr>";
-        ssend << "\r\n\t\t\t</table><br>\r\n\t\t\t<form method=post>\r\n\t\t\t\t<a href=/history><button type=button style=text-align:center;width:5em>History</button></a>\r\n\t\t\t\t<button type=submit formaction=/settings>Settings</button>\r\n\t\t\t</form>";
+        ssend << "\r\n\t\t\t<form method=post>\r\n\t\t\t\t<table style=border-collapse:collapse>\r\n\t\t\t\t\t<tr>";
+        ssend << "\r\n\t\t\t\t\t\t<th style=text-align:center;background-color:" << (enable[0]==NOPEN?"gold":"red") << ">1</th>";
+        ssend << "\r\n\t\t\t\t\t\t<th style=text-align:center;background-color:" << (enable[1]==NOPEN?"gold":"red") << ">2</th>";
+        ssend << "\r\n\t\t\t\t\t</tr>\r\n\t\t\t\t\t<tr>";
+        ssend << "\r\n\t\t\t\t\t\t<td style=text-align:center;background-color:" << (enable[0]==NOPEN?"gold":"red") << "><label for=id1>" << (enable[0]==NOPEN?"NO":"NC") << "</label></td>";
+        ssend << "\r\n\t\t\t\t\t\t<td style=text-align:center;background-color:" << (enable[1]==NOPEN?"gold":"red") << "><label for=id2>" << (enable[1]==NOPEN?"NO":"NC") << "</label></td>";
+        ssend << "\r\n\t\t\t\t\t</tr>\r\n\t\t\t\t\t<tr>";
+        ssend << "\r\n\t\t\t\t\t\t<td style=text-align:center><button type=submit id=id1 style=text-align:center;width:5em formaction=/" << (enable[0]==NOPEN?"1CLOSE":"1OPEN") << (enable[0]==NOPEN?">CLOSE":">OPEN") << "</button></td>";
+        ssend << "\r\n\t\t\t\t\t\t<td style=text-align:center><button type=submit id=id2 style=text-align:center;width:5em formaction=/" << (enable[1]==NOPEN?"2CLOSE":"2OPEN") << (enable[1]==NOPEN?">CLOSE":">OPEN") << "</button></td>";
+        ssend << "\r\n\t\t\t\t\t</tr>\r\n\t\t\t\t</table>\r\n\t\t\t\t<br><button type=submit style=text-align:center;width:5em formaction=/settings>Settings</button>\r\n\t\t\t</form>";
         ssend << html(CLOSE_BODY);
+    }
+    else if(cmd.find("POST /1OPEN HTTP") != string::npos)
+    {
+        enable[0] = NOPEN;
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /\r\n\r\n";
+    }
+    else if(cmd.find("POST /1CLOSE HTTP") != string::npos)
+    {
+        enable[0] = NCLOSE;
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /\r\n\r\n";
+    }
+    else if(cmd.find("POST /2OPEN HTTP") != string::npos)
+    {
+        enable[1] = NOPEN;
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /\r\n\r\n";
+    }
+    else if(cmd.find("POST /2CLOSE HTTP") != string::npos)
+    {
+        enable[1] = NCLOSE;
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /\r\n\r\n";
+    }
+    else if(cmd.find("POST /SETTINGS HTTP") != string::npos)
+    {
+        password = admin = false;
+        ssend << transmission.http.RETURN_SEE_OTHER << "Location: /settings\r\n\r\n";
+    }
+    else if(cmd.find("GET /SETTINGS HTTP") != string::npos)
+    {
+        ssend << transmission.http.RETURN_OK << html(CONTENT) << html(HEAD) << html(OPEN_BODY);
+        if(password && (cmd.find("REFERER: ") != string::npos))
+        {
+            ssend << "\r\n\t\t\t\t<fieldset>\r\n\t\t\t\t\t<legend style=margin-left:auto;margin-right:auto;color:white>ETHERNET</legend>";
+            ssend << "\r\n\t\t\t\t\t<form method=get>\r\n\t\t\t\t\t\t<table>\r\n\t\t\t\t\t\t\t<tr>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<th style=text-align:center;width:3em><label for=idDhcp>Dhcp</label></th>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<th style=text-align:center><label for=idIp>Ip</label></th>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<th style=text-align:center><label for=idMask>Mask</label></th>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<th style=text-align:center><label for=idGateway>Gateway</label></th>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<th style=width:3em></th>";
+            ssend << "\r\n\t\t\t\t\t\t\t</tr>\r\n\t\t\t\t\t\t\t<tr>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<td style=text-align:center><input type=checkbox name=Connection value=Dhcp id=idDhcp " << (connection.dhcp?"checked":"") << "></td>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<td style=text-align:center><input type=text name=Ip id=idIp style=text-align:center value=\"" << connection.ip << ":" << connection.port << "\" required minlength=10 maxlength=18 size=15 pattern=\"^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.?\\b){4}:80$\"></td>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<td style=text-align:center><input type=text name=Mask id=idMask style=text-align:center value=\"" << connection.mask << "\" required minlength=7 maxlength=15 size=15 pattern=\"^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.?\\b){4}$\"></td>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<td style=text-align:center><input type=text name=Gateway id=idGateway style=text-align:center value=\"" << connection.gateway << "\" required minlength=7 maxlength=15 size=15 pattern=\"^((25[0-5]|(2[0-4]|1\\d|[1-9]|)\\d)\\.?\\b){4}$\"></td>";
+            ssend << "\r\n\t\t\t\t\t\t\t\t<td></td>";
+            ssend << "\r\n\t\t\t\t\t\t\t</tr>\r\n\t\t\t\t\t\t</table>\r\n\t\t\t\t\t\t<button type=submit formaction=/settings/ethernet/set style=text-align:center;width:5em>Set</button>\r\n\t\t\t\t\t</form>";
+            ssend << "\r\n\t\t\t\t\t<a href=/settings/ethernet/reboot><button type=button style=text-align:center;width:5em>Reboot</button></a>\r\n\t\t\t\t</fieldset>";
+            ssend << "\r\n\t\t\t\t<fieldset>\r\n\t\t\t\t\t<legend style=margin-left:auto;margin-right:auto;color:white>PASSWORD</legend>\r\n\t\t\t\t\t<form method=post>";
+            ssend << "\r\n\t\t\t\t\t\t<input style=text-align:center type=password name=password placeholder=OLD maxlength=16 " << (admin?"hidden":"required") << " list=extension><br>";
+            ssend << "\r\n\t\t\t\t\t\t<input style=text-align:center type=password name=new placeholder=NEW maxlength=16 required list=extension><br>";
+            ssend << "\r\n\t\t\t\t\t\t<button type=submit formaction=/settings/change style=text-align:center;width:5em>Set</button>\r\n\t\t\t\t\t</form>\r\n\t\t\t\t</fieldset>";
+            transfert.clear();
+        }
+        else ssend << "\r\n\t\t\t<form method=post>\r\n\t\t\t\t<input style=text-align:center type=password name=login autofocus required>\r\n\t\t\t</form>";
+        ssend << "\r\n\t\t\t<br><a href=/><button type=button style=text-align:center;width:5em>Return</button></a>" << html(CLOSE_BODY);
+    }
+    else if(cmd.find("GET /SETTINGS/ETHERNET/REBOOT HTTP") != string::npos)
+    {
+        if(password && (cmd.find("REFERER: ") != string::npos)) queue.call(&processing, "ETH=REBOOT");
+        ssend << transmission.http.RETURN_RESET_CONTENT;
+    }
+    else if(cmd.find("GET /SETTINGS/ETHERNET/SET?") != string::npos)
+    {
+        if(password && (cmd.find("REFERER: ") != string::npos))
+        {
+            if((cmd.find("CONNECTION=DHCP") != string::npos) && !connection.dhcp) queue.call(&processing, "ETH=DHCP");
+            else
+            {
+                string START[] = { "IP=", "%3A", "MASK=", "GATEWAY=" }, STOP[] = { "%3A", "&MASK", "&GATEWAY", " HTTP" };
+                for(int PARAM = 0, dt = 0; PARAM < 4; PARAM++)
+                {
+                    if(cmd.find(START[PARAM]) != string::npos)
+                    {
+                        istringstream istr(cmd.substr(cmd.find(START[PARAM]) + START[PARAM].size(), cmd.find(STOP[PARAM]) - cmd.find(START[PARAM]) - START[PARAM].size()));
+                        switch(PARAM)
+                        {
+                            case 0: istr >> connection.ip; break;
+                            case 1: istr >> connection.port; break;
+                            case 2: istr >> connection.mask; break;
+                            case 3: istr >> connection.gateway; break;
+                            default: break;
+                        }
+                    }
+                }
+                queue.call(&processing, "ETH=IP " + connection.ip + ":" + to_string(connection.port) + " " + connection.mask + " " + connection.gateway);
+            }
+        }
+        ssend << transmission.http.RETURN_RESET_CONTENT;
     }
     else if(cmd.find("GET /*IDN? HTTP") != string::npos)
         ssend << transmission.http.RETURN_OK << html(CONTENT) << MBED_IDN;
