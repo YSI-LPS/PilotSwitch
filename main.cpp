@@ -28,7 +28,7 @@ struct  {   Transmission::enum_trans_status state;
             string mask;
             string gateway;
             int color[8];
-} connection = { Transmission::RED_DISCONNECTED, Transmission::BLUE_CLIENT, false, 80, "192.168.1.25", "255.255.255.0", "192.168.1.0",
+} connection = { Transmission::RED_DISCONNECTED, Transmission::BLUE_CLIENT, false, 80, "192.168.33.4", "255.255.255.0", "192.168.33.0",
 #if(defined(TARGET_LPC1768) || defined(TARGET_K64F))
     { 0, 1, 2, 3, 4, 5, 6, 7 }};
 #elif(defined(TARGET_NUCLEO_H743ZI2) || defined(TARGET_NUCLEO_F767ZI) || defined(TARGET_NUCLEO_F429ZI) || defined(TARGET_NUCLEO_F746ZG) || defined(TARGET_NUCLEO_F756ZG))
@@ -99,21 +99,15 @@ void kv_apply(string kvKey, string kvParam)
 {
     string kvValue = kv(kvKey);
     enum enumKvSTATUS { KVAL_PVAL, NOTKVAL_PVAL, KVAL_NOTPVAL, NOTKVAL_NOTPVAL } kvStatus = enumKvSTATUS((1*kvValue.empty()) + (2*kvParam.empty()));
-    if(kvKey == "IDN")
-    {
-        if(kvValue != MBED_IDN) kv(kvKey, MBED_IDN);
-    }
-    else if(kvKey == "ETH")
-    {
-        processing((kvValue.substr(0, 3) == "ETH")?kvValue:"ETH=DHCP");
-    }
+    if((kvKey == "IDN") && (kvValue != MBED_IDN)) kv(kvKey, MBED_IDN);
+    else if(kvKey == "ETH") processing((kvValue.substr(0, 3) == "ETH")?kvValue:"ETH=IP");
     else if(kvKey == "PASSWORD")
     {
         switch(kvStatus)
         {
             case KVAL_PVAL: case NOTKVAL_PVAL: if(kvValue != kvParam) kv(kvKey, kvValue = kvParam); break;
             case NOTKVAL_NOTPVAL: kv(kvKey, kvValue = uc.pwd); break;
-            default: break;
+            case KVAL_NOTPVAL: break;
         }
         uc.pwd = kvValue;
     }
@@ -198,6 +192,8 @@ string processing(string cmd)
         ssend << "IP=ALL\t[" << transmission.ip(transmission.ip()) << "]";
     else if(cmd == "IP=MEM?")
         ssend << "IP=MEM\t[" << connection.ip << ":" << connection.port << " " << connection.mask << " " << connection.gateway << "]";
+    else if(cmd == "SWITCHS?")
+        ssend << "SWITCHS\t[1" << (enable[0]==NOPEN?"O":"C") << " 2" << (enable[1]==NOPEN?"O":"C") << "]";
     else if(cmd == "ETH=OFF")
         uc.param[MAC] = transmission.ip(false);
     else if(cmd == "ETH=REBOOT")
